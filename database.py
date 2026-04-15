@@ -6,6 +6,7 @@ DB_NAME = "bot_data.db"
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    # Users
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -13,6 +14,7 @@ def init_db():
         balance REAL DEFAULT 0,
         registered_at TEXT
     )""")
+    # Products
     c.execute("""CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         seller_id INTEGER,
@@ -22,6 +24,7 @@ def init_db():
         description TEXT,
         created_at TEXT
     )""")
+    # Purchases
     c.execute("""CREATE TABLE IF NOT EXISTS purchases (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         product_id INTEGER,
@@ -29,6 +32,7 @@ def init_db():
         amount REAL,
         purchased_at TEXT
     )""")
+    # Withdrawals
     c.execute("""CREATE TABLE IF NOT EXISTS withdrawals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -37,6 +41,7 @@ def init_db():
         status TEXT,
         created_at TEXT
     )""")
+    # Payments (CryptoBot)
     c.execute("""CREATE TABLE IF NOT EXISTS payments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -45,6 +50,7 @@ def init_db():
         status TEXT,
         created_at TEXT
     )""")
+    # VK accounts
     c.execute("""CREATE TABLE IF NOT EXISTS vk_accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -53,6 +59,7 @@ def init_db():
         group_id INTEGER,
         created_at TEXT
     )""")
+    # VK templates
     c.execute("""CREATE TABLE IF NOT EXISTS vk_templates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -60,6 +67,7 @@ def init_db():
         text TEXT,
         created_at TEXT
     )""")
+    # Blocked users
     c.execute("""CREATE TABLE IF NOT EXISTS blocked (
         user_id INTEGER PRIMARY KEY
     )""")
@@ -79,9 +87,9 @@ def get_user(user_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT user_id, username, first_name, balance, registered_at FROM users WHERE user_id=?", (user_id,))
-    user = c.fetchone()
+    row = c.fetchone()
     conn.close()
-    return user
+    return row
 
 def get_balance(user_id):
     conn = sqlite3.connect(DB_NAME)
@@ -95,13 +103,6 @@ def update_balance(user_id, amount):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
-    conn.commit()
-    conn.close()
-
-def set_balance(user_id, new_balance):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("UPDATE users SET balance = ? WHERE user_id=?", (new_balance, user_id))
     conn.commit()
     conn.close()
 
@@ -128,21 +129,14 @@ def add_product(seller_id, name, price, contacts, description):
     c.execute("INSERT INTO products (seller_id, name, price, contacts, description, created_at) VALUES (?,?,?,?,?,?)",
               (seller_id, name, price, contacts, description, datetime.now().isoformat()))
     conn.commit()
-    pid = c.lastrowid
     conn.close()
-    return pid
 
 def get_products(limit=10, offset=0, sort_by='new', min_contacts=0):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     order = "ORDER BY created_at DESC" if sort_by == 'new' else "ORDER BY price ASC"
-    c.execute(f"""
-        SELECT id, seller_id, name, price, contacts, description, created_at 
-        FROM products 
-        WHERE contacts >= ? 
-        {order} 
-        LIMIT ? OFFSET ?
-    """, (min_contacts, limit, offset))
+    c.execute(f"SELECT id, seller_id, name, price, contacts, description, created_at FROM products WHERE contacts >= ? {order} LIMIT ? OFFSET ?",
+              (min_contacts, limit, offset))
     prods = c.fetchall()
     conn.close()
     return prods
@@ -163,21 +157,10 @@ def get_product(product_id):
     conn.close()
     return prod
 
-def get_user_products(seller_id):
+def delete_product(product_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT id, name, price, contacts, description FROM products WHERE seller_id=?", (seller_id,))
-    prods = c.fetchall()
-    conn.close()
-    return prods
-
-def delete_product(product_id, seller_id=None):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    if seller_id:
-        c.execute("DELETE FROM products WHERE id=? AND seller_id=?", (product_id, seller_id))
-    else:
-        c.execute("DELETE FROM products WHERE id=?", (product_id,))
+    c.execute("DELETE FROM products WHERE id=?", (product_id,))
     conn.commit()
     conn.close()
 
@@ -189,16 +172,6 @@ def add_purchase(product_id, buyer_id, amount):
               (product_id, buyer_id, amount, datetime.now().isoformat()))
     conn.commit()
     conn.close()
-
-def get_user_purchases(buyer_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("""SELECT p.id, pr.name, pr.price, pr.contacts, pr.description, p.purchased_at 
-                 FROM purchases p JOIN products pr ON p.product_id = pr.id 
-                 WHERE p.buyer_id = ? ORDER BY p.purchased_at DESC""", (buyer_id,))
-    purchases = c.fetchall()
-    conn.close()
-    return purchases
 
 # ---------- Withdrawals ----------
 def create_withdrawal(user_id, amount, wallet_address):
@@ -245,7 +218,7 @@ def confirm_payment(invoice_id):
         update_balance(payment[0], payment[1])
     conn.close()
 
-# ---------- VK Accounts ----------
+# ---------- VK ----------
 def add_vk_account(user_id, name, token, group_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -277,7 +250,6 @@ def delete_vk_account(account_id, user_id):
     conn.commit()
     conn.close()
 
-# ---------- VK Templates ----------
 def add_vk_template(user_id, name, text):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -309,7 +281,6 @@ def delete_vk_template(template_id, user_id):
     conn.commit()
     conn.close()
 
-# ---------- Block ----------
 def block_user(user_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()

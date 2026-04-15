@@ -1,36 +1,24 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import asyncio
 import logging
 import sys
-import os
-import subprocess
-import time
 import requests
+import time
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple, List
-
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-
 import vk_api
-
 from config import BOT_TOKEN, ADMIN_IDS, REQUIRED_CHANNEL_ID, ADMIN_LOG_CHAT_ID, CRYPTOBOT_API_TOKEN
 from database import *
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
+logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+dp = Dispatcher()
 
-# Custom emoji IDs (your premium emojis)
+# ========== КАСТОМНЫЕ ЭМОДЗИ (твои ID) ==========
 EMOJI_IDS = {
     "catalog": "5278613311858959074",
     "add": "5206401524200145033",
@@ -49,7 +37,7 @@ EMOJI_IDS = {
 def custom_emoji_button(text: str, callback_data: str, emoji_id: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=callback_data, icon_custom_emoji_id=emoji_id)
 
-# ---------- Helpers ----------
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 async def is_subscribed(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL_ID, user_id=user_id)
@@ -67,18 +55,18 @@ async def log_to_admin(text: str):
     if ADMIN_LOG_CHAT_ID:
         try:
             await bot.send_message(ADMIN_LOG_CHAT_ID, text)
-        except Exception as e:
-            logger.error(f"Log send failed: {e}")
+        except:
+            pass
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
-# ---------- Main Menu ----------
-def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
+# ========== ГЛАВНОЕ МЕНЮ ==========
+def main_menu(user_id: int) -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(text="Каталог"), KeyboardButton(text="Добавить товар")],
         [KeyboardButton(text="Баланс"), KeyboardButton(text="Вывод средств")],
-        [KeyboardButton(text="VK Рассылка"), KeyboardButton(text="Помощь")],
+        [KeyboardButton(text="Помощь")],
     ]
     if is_admin(user_id):
         kb.append([KeyboardButton(text="Админ панель")])
@@ -94,9 +82,9 @@ async def start(message: types.Message):
         return
     add_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     await log_to_admin(f"➕ Новый пользователь: {message.from_user.id} (@{message.from_user.username})")
-    await message.answer("✅ Добро пожаловать!", reply_markup=main_menu_keyboard(message.from_user.id))
+    await message.answer("✅ Добро пожаловать!", reply_markup=main_menu(message.from_user.id))
 
-# ---------- Balance & Top-up & Withdraw ----------
+# ========== БАЛАНС И ВЫВОД ==========
 @dp.message(lambda m: m.text == "Баланс")
 async def show_balance(message: types.Message):
     if not await ensure_subscribed(message):
@@ -195,20 +183,20 @@ async def withdraw_address(message: types.Message, state: FSMContext):
     await log_to_admin(f"💸 Заявка на вывод от {message.from_user.id}: {amount} $ на адрес {address}")
     await state.clear()
 
-# ---------- Catalog (exactly as screenshot) ----------
-user_catalog_state = {}
+# ========== КАТАЛОГ (ТОЧЬ-В-ТОЧЬ) ==========
+user_catalog = {}
 
 @dp.message(lambda m: m.text == "Каталог")
-async def catalog_command(message: types.Message):
+async def catalog(message: types.Message):
     if not await ensure_subscribed(message):
         return
     chat_id = message.chat.id
-    user_catalog_state[chat_id] = {'page': 0, 'sort': 'new', 'min_contacts': 0, 'last_msg_id': None}
+    user_catalog[chat_id] = {'page': 0, 'sort': 'new', 'min_contacts': 0, 'last_msg_id': None}
     await show_catalog(message)
 
 async def show_catalog(message: types.Message, edit_msg_id: int = None):
     chat_id = message.chat.id
-    state = user_catalog_state.get(chat_id, {'page': 0, 'sort': 'new', 'min_contacts': 0})
+    state = user_catalog.get(chat_id, {'page': 0, 'sort': 'new', 'min_contacts': 0})
     page = state['page']
     sort = state['sort']
     min_contacts = state['min_contacts']
@@ -216,127 +204,98 @@ async def show_catalog(message: types.Message, edit_msg_id: int = None):
     offset = page * limit
     products = get_products(limit, offset, sort, min_contacts)
     total = get_total_products(min_contacts)
+    if not products:
+        text = "📭 В каталоге пока нет товаров."
+        if edit_msg_id:
+            await bot.edit_message_text(text, chat_id=chat_id, message_id=edit_msg_id)
+        else:
+            await message.answer(text)
+        return
 
     text = "📋 <b>Каталог аккаунтов</b>\n\n"
-    filter_btn = [custom_emoji_button("Фильтры поиска", "show_filters", EMOJI_IDS["catalog"])]
-    product_btns = []
     for p in products:
         pid, _, name, price, contacts, _, _ = p
-        product_btns.append([custom_emoji_button(f"{contacts} конт. • {price}$", f"view_{pid}", EMOJI_IDS["catalog"])])
+        text += f"🔹 <b>{name}</b>\n💰 {price}$ • Контактов: {contacts}\n\n"
     total_pages = max(1, (total + limit - 1) // limit)
-    pagination = []
+    text += f"📄 Страница {page+1} / {total_pages}"
+
+    filter_btn = [custom_emoji_button("Фильтры поиска", "filters", EMOJI_IDS["catalog"])]
+    product_btns = [custom_emoji_button(f"{p[4]} конт. • {p[3]}$", f"view_{p[0]}", EMOJI_IDS["catalog"]) for p in products]
+    nav = []
     if page > 0:
-        pagination.append(custom_emoji_button("◀", "catalog_prev", EMOJI_IDS["back"]))
-    pagination.append(custom_emoji_button(f"{page+1} / {total_pages}", "noop", EMOJI_IDS["catalog"]))
+        nav.append(custom_emoji_button("◀ Назад", "prev", EMOJI_IDS["back"]))
     if (page+1)*limit < total:
-        pagination.append(custom_emoji_button("▶", "catalog_next", EMOJI_IDS["back"]))
-    back_btn = [custom_emoji_button("Назад", "back_to_menu", EMOJI_IDS["back"])]
+        nav.append(custom_emoji_button("Вперед ▶", "next", EMOJI_IDS["back"]))
+    back_btn = [custom_emoji_button("Назад", "back_menu", EMOJI_IDS["back"])]
 
-    inline_kb = [filter_btn] + product_btns + [pagination] + [back_btn]
+    inline_kb = filter_btn + [[btn] for btn in product_btns] + [nav] + back_btn
     markup = InlineKeyboardMarkup(inline_keyboard=inline_kb)
-
     if edit_msg_id:
-        await bot.edit_message_text(text, chat_id, edit_msg_id, parse_mode="HTML", reply_markup=markup)
+        await bot.edit_message_text(text, chat_id=chat_id, message_id=edit_msg_id, parse_mode="HTML", reply_markup=markup)
         state['last_msg_id'] = edit_msg_id
     else:
         sent = await message.answer(text, parse_mode="HTML", reply_markup=markup)
         state['last_msg_id'] = sent.message_id
-    user_catalog_state[chat_id] = state
+    user_catalog[chat_id] = state
 
-@dp.callback_query(lambda c: c.data == "show_filters")
-async def show_filters_menu(callback: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data == "filters")
+async def show_filters(callback: types.CallbackQuery):
     chat_id = callback.message.chat.id
-    last_id = user_catalog_state.get(chat_id, {}).get('last_msg_id')
-    if not last_id:
-        await callback.answer("Ошибка", show_alert=True)
+    state = user_catalog.get(chat_id)
+    if not state or not state.get('last_msg_id'):
+        await callback.answer("Ошибка, попробуйте снова /start")
         return
+    last_msg_id = state['last_msg_id']
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [custom_emoji_button("Сортировка - сначала новые", "set_sort_new", EMOJI_IDS["catalog"])],
-        [custom_emoji_button("Сортировка - сначала дешёвые", "set_sort_price", EMOJI_IDS["catalog"])],
-        [custom_emoji_button("Контакты от 40 шт.", "set_min_contacts", EMOJI_IDS["catalog"])],
-        [custom_emoji_button("Назад", "back_to_catalog", EMOJI_IDS["back"])],
+        [custom_emoji_button("Сначала новые", "sort_new", EMOJI_IDS["catalog"])],
+        [custom_emoji_button("Сначала дешёвые", "sort_price", EMOJI_IDS["catalog"])],
+        [custom_emoji_button("Контакты от 40 шт.", "filter_contacts", EMOJI_IDS["catalog"])],
+        [custom_emoji_button("Назад", "back_catalog", EMOJI_IDS["back"])],
     ])
-    await bot.edit_message_text("Фильтры поиска", chat_id, last_id, reply_markup=markup)
+    await bot.edit_message_text("Фильтры поиска", chat_id=chat_id, message_id=last_msg_id, reply_markup=markup)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "set_sort_new")
-async def set_sort_new(callback: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data in ["sort_new", "sort_price", "filter_contacts", "prev", "next", "back_catalog"])
+async def catalog_handlers(callback: types.CallbackQuery, state: FSMContext):
     chat_id = callback.message.chat.id
-    if chat_id not in user_catalog_state:
-        user_catalog_state[chat_id] = {'page': 0, 'sort': 'new', 'min_contacts': 0}
-    user_catalog_state[chat_id]['sort'] = 'new'
-    user_catalog_state[chat_id]['page'] = 0
-    last_id = user_catalog_state[chat_id]['last_msg_id']
-    fake_msg = types.Message(chat=types.Chat(id=chat_id), message_id=last_id, from_user=callback.from_user)
-    await show_catalog(fake_msg, edit_msg_id=last_id)
+    if chat_id not in user_catalog:
+        user_catalog[chat_id] = {'page': 0, 'sort': 'new', 'min_contacts': 0, 'last_msg_id': None}
+    if callback.data == "sort_new":
+        user_catalog[chat_id]['sort'] = 'new'
+        user_catalog[chat_id]['page'] = 0
+        await show_catalog(callback.message, edit_msg_id=user_catalog[chat_id]['last_msg_id'])
+    elif callback.data == "sort_price":
+        user_catalog[chat_id]['sort'] = 'price'
+        user_catalog[chat_id]['page'] = 0
+        await show_catalog(callback.message, edit_msg_id=user_catalog[chat_id]['last_msg_id'])
+    elif callback.data == "filter_contacts":
+        await callback.message.answer("Введите минимальное количество контактов (число):")
+        await state.set_state("waiting_contacts")
+    elif callback.data == "prev":
+        user_catalog[chat_id]['page'] -= 1
+        await show_catalog(callback.message, edit_msg_id=user_catalog[chat_id]['last_msg_id'])
+    elif callback.data == "next":
+        user_catalog[chat_id]['page'] += 1
+        await show_catalog(callback.message, edit_msg_id=user_catalog[chat_id]['last_msg_id'])
+    elif callback.data == "back_catalog":
+        await show_catalog(callback.message, edit_msg_id=user_catalog[chat_id]['last_msg_id'])
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "set_sort_price")
-async def set_sort_price(callback: types.CallbackQuery):
-    chat_id = callback.message.chat.id
-    if chat_id not in user_catalog_state:
-        user_catalog_state[chat_id] = {'page': 0, 'sort': 'new', 'min_contacts': 0}
-    user_catalog_state[chat_id]['sort'] = 'price'
-    user_catalog_state[chat_id]['page'] = 0
-    last_id = user_catalog_state[chat_id]['last_msg_id']
-    fake_msg = types.Message(chat=types.Chat(id=chat_id), message_id=last_id, from_user=callback.from_user)
-    await show_catalog(fake_msg, edit_msg_id=last_id)
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "set_min_contacts")
-async def ask_min_contacts(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("Введите минимальное количество контактов (число):")
-    await state.set_state("waiting_min_contacts")
-    await callback.answer()
-
-@dp.message(State("waiting_min_contacts"))
-async def set_min_contacts(message: types.Message, state: FSMContext):
+@dp.message(State("waiting_contacts"))
+async def set_contacts_filter(message: types.Message, state: FSMContext):
     try:
         min_contacts = int(message.text)
         if min_contacts < 0:
             raise ValueError
         chat_id = message.chat.id
-        if chat_id not in user_catalog_state:
-            user_catalog_state[chat_id] = {'page': 0, 'sort': 'new', 'min_contacts': 0}
-        user_catalog_state[chat_id]['min_contacts'] = min_contacts
-        user_catalog_state[chat_id]['page'] = 0
-        last_id = user_catalog_state[chat_id].get('last_msg_id')
-        if last_id:
-            fake_msg = types.Message(chat=types.Chat(id=chat_id), message_id=last_id, from_user=message.from_user)
-            await show_catalog(fake_msg, edit_msg_id=last_id)
-        else:
-            await show_catalog(message)
+        if chat_id not in user_catalog:
+            user_catalog[chat_id] = {'page': 0, 'sort': 'new', 'min_contacts': 0, 'last_msg_id': None}
+        user_catalog[chat_id]['min_contacts'] = min_contacts
+        user_catalog[chat_id]['page'] = 0
+        await show_catalog(message, edit_msg_id=user_catalog[chat_id]['last_msg_id'])
     except:
         await message.answer("❌ Введите целое неотрицательное число.")
     await state.clear()
-
-@dp.callback_query(lambda c: c.data in ["catalog_prev", "catalog_next"])
-async def catalog_navigate(callback: types.CallbackQuery):
-    chat_id = callback.message.chat.id
-    state = user_catalog_state.get(chat_id)
-    if not state:
-        await callback.answer("Ошибка")
-        return
-    if callback.data == "catalog_prev":
-        state['page'] -= 1
-    else:
-        state['page'] += 1
-    last_id = state['last_msg_id']
-    fake_msg = types.Message(chat=types.Chat(id=chat_id), message_id=last_id, from_user=callback.from_user)
-    await show_catalog(fake_msg, edit_msg_id=last_id)
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "back_to_catalog")
-async def back_to_catalog(callback: types.CallbackQuery):
-    chat_id = callback.message.chat.id
-    state = user_catalog_state.get(chat_id)
-    if not state:
-        await callback.answer("Ошибка")
-        return
-    last_id = state['last_msg_id']
-    fake_msg = types.Message(chat=types.Chat(id=chat_id), message_id=last_id, from_user=callback.from_user)
-    await show_catalog(fake_msg, edit_msg_id=last_id)
-    await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("view_"))
 async def view_product(callback: types.CallbackQuery):
@@ -347,7 +306,7 @@ async def view_product(callback: types.CallbackQuery):
         return
     pid, seller_id, name, price, contacts, desc = prod
     seller = get_user(seller_id)
-    seller_name = seller[1] or seller[2] or str(seller_id)
+    seller_name = seller[1] or seller[2] or str(seller_id) if seller else str(seller_id)
     text = (f"📦 <b>{name}</b>\n\n"
             f"💰 Цена: {price} $\n"
             f"📞 Контактов: {contacts}\n"
@@ -355,7 +314,7 @@ async def view_product(callback: types.CallbackQuery):
             f"👤 Продавец: {seller_name}")
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [custom_emoji_button("Купить", f"buy_{pid}", EMOJI_IDS["buy"])],
-        [custom_emoji_button("Назад", "back_to_catalog", EMOJI_IDS["back"])]
+        [custom_emoji_button("Назад", "back_catalog", EMOJI_IDS["back"])]
     ])
     await callback.message.answer(text, parse_mode="HTML", reply_markup=markup)
     await callback.answer()
@@ -377,7 +336,7 @@ async def buy_product(callback: types.CallbackQuery):
         update_balance(buyer_id, -price)
         update_balance(seller_id, price)
         add_purchase(product_id, buyer_id, price)
-        delete_product(product_id)  # удаляем товар после покупки
+        delete_product(product_id)
         await callback.message.answer(f"✅ Вы купили {name} за {price}$\nТовар удалён из каталога.")
         await bot.send_message(seller_id, f"💰 Ваш товар {name} куплен за {price}$. Баланс пополнен. Товар удалён.")
         await log_to_admin(f"🛒 Покупка: {buyer_id} купил у {seller_id} товар {name} за {price}$. Товар удалён.")
@@ -386,7 +345,7 @@ async def buy_product(callback: types.CallbackQuery):
         await callback.message.answer(f"❌ Недостаточно средств\nДоступно: {balance:.2f} $")
         await callback.answer()
 
-# ---------- Add Product ----------
+# ========== ДОБАВЛЕНИЕ ТОВАРА ==========
 class AddProductState(StatesGroup):
     name = State()
     price = State()
@@ -410,7 +369,8 @@ async def add_product_name(message: types.Message, state: FSMContext):
 async def add_product_price(message: types.Message, state: FSMContext):
     try:
         price = float(message.text)
-        if price <= 0: raise ValueError
+        if price <= 0:
+            raise ValueError
         await state.update_data(price=price)
         await message.answer("Введите количество контактов (число):")
         await state.set_state(AddProductState.contacts)
@@ -421,7 +381,8 @@ async def add_product_price(message: types.Message, state: FSMContext):
 async def add_product_contacts(message: types.Message, state: FSMContext):
     try:
         contacts = int(message.text)
-        if contacts < 0: raise ValueError
+        if contacts < 0:
+            raise ValueError
         await state.update_data(contacts=contacts)
         await message.answer("Введите описание товара:")
         await state.set_state(AddProductState.desc)
@@ -436,7 +397,7 @@ async def add_product_desc(message: types.Message, state: FSMContext):
     await log_to_admin(f"🆕 Новый товар от {message.from_user.id}: {data['name']} за {data['price']}$")
     await state.clear()
 
-# ---------- VK Sender (full) ----------
+# ========== VK РАССЫЛКА (полная) ==========
 class VKAddAccountState(StatesGroup):
     name = State()
     token = State()
@@ -693,25 +654,24 @@ async def do_vk_broadcast(chat_id, user_id, account_id, text):
     except Exception as e:
         await bot.send_message(chat_id, f"❌ Ошибка VK: {e}")
 
-# ---------- Admin Panel ----------
+# ========== АДМИН ПАНЕЛЬ ==========
 @dp.message(lambda m: m.text == "Админ панель" and is_admin(m.from_user.id))
 async def admin_panel(message: types.Message):
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [custom_emoji_button("Статистика", "admin_stats", EMOJI_IDS["admin"])],
-        [custom_emoji_button("Пользователи", "admin_users", EMOJI_IDS["admin"])],
-        [custom_emoji_button("Выдать баланс", "admin_give", EMOJI_IDS["balance"])],
-        [custom_emoji_button("Списать баланс", "admin_take", EMOJI_IDS["withdraw"])],
-        [custom_emoji_button("Заявки на вывод", "admin_withdrawals", EMOJI_IDS["success"])],
-        [custom_emoji_button("Управление товарами", "admin_products", EMOJI_IDS["catalog"])],
-        [custom_emoji_button("Заблокировать", "admin_block", EMOJI_IDS["delete"])],
-        [custom_emoji_button("Разблокировать", "admin_unblock", EMOJI_IDS["success"])],
-        [custom_emoji_button("Рассылка", "admin_broadcast", EMOJI_IDS["vk"])],
-        [custom_emoji_button("Зеркало", "admin_mirror", EMOJI_IDS["admin"])],
-        [custom_emoji_button("Назад", "back_to_menu", EMOJI_IDS["back"])],
+        [custom_emoji_button("Статистика", "stats", EMOJI_IDS["admin"])],
+        [custom_emoji_button("Пользователи", "users", EMOJI_IDS["admin"])],
+        [custom_emoji_button("Выдать баланс", "give", EMOJI_IDS["balance"])],
+        [custom_emoji_button("Заявки на вывод", "withdraws", EMOJI_IDS["withdraw"])],
+        [custom_emoji_button("Управление товарами", "products", EMOJI_IDS["catalog"])],
+        [custom_emoji_button("Заблокировать", "block", EMOJI_IDS["delete"])],
+        [custom_emoji_button("Разблокировать", "unblock", EMOJI_IDS["success"])],
+        [custom_emoji_button("Рассылка", "broadcast", EMOJI_IDS["vk"])],
+        [custom_emoji_button("Зеркало", "mirror", EMOJI_IDS["admin"])],
+        [custom_emoji_button("Назад", "back_menu", EMOJI_IDS["back"])],
     ])
     await message.answer("🔧 Админ панель", reply_markup=markup)
 
-@dp.callback_query(lambda c: c.data == "admin_stats")
+@dp.callback_query(lambda c: c.data == "stats")
 async def admin_stats(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет прав")
@@ -721,7 +681,7 @@ async def admin_stats(callback: types.CallbackQuery):
     await callback.message.answer(f"📊 Статистика:\n👥 Пользователей: {users}\n📦 Товаров: {products}")
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "admin_users")
+@dp.callback_query(lambda c: c.data == "users")
 async def admin_users(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет прав")
@@ -734,25 +694,26 @@ async def admin_users(callback: types.CallbackQuery):
         await callback.message.answer(text)
     await callback.answer()
 
-class AdminGiveState(StatesGroup):
+class AdminGive(StatesGroup):
     data = State()
 
-@dp.callback_query(lambda c: c.data == "admin_give")
+@dp.callback_query(lambda c: c.data == "give")
 async def admin_give_start(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет прав")
         return
-    await callback.message.answer("Введите ID пользователя и сумму через пробел (например 123456 10):")
-    await state.set_state(AdminGiveState.data)
+    await callback.message.answer("Введите ID и сумму через пробел (например 123456 10):")
+    await state.set_state(AdminGive.data)
     await callback.answer()
 
-@dp.message(AdminGiveState.data)
+@dp.message(AdminGive.data)
 async def admin_give_exec(message: types.Message, state: FSMContext):
     try:
         parts = message.text.split()
         user_id = int(parts[0])
         amount = float(parts[1])
-        if amount <= 0: raise ValueError
+        if amount <= 0:
+            raise ValueError
         update_balance(user_id, amount)
         await message.answer(f"✅ Пользователю {user_id} начислено {amount} $")
         await bot.send_message(user_id, f"💰 Администратор начислил вам {amount} $")
@@ -761,34 +722,7 @@ async def admin_give_exec(message: types.Message, state: FSMContext):
         await message.answer("❌ Ошибка. Используйте: ID сумма (положительное число)")
     await state.clear()
 
-class AdminTakeState(StatesGroup):
-    data = State()
-
-@dp.callback_query(lambda c: c.data == "admin_take")
-async def admin_take_start(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет прав")
-        return
-    await callback.message.answer("Введите ID пользователя и сумму для списания (например 123456 5):")
-    await state.set_state(AdminTakeState.data)
-    await callback.answer()
-
-@dp.message(AdminTakeState.data)
-async def admin_take_exec(message: types.Message, state: FSMContext):
-    try:
-        parts = message.text.split()
-        user_id = int(parts[0])
-        amount = float(parts[1])
-        if amount <= 0: raise ValueError
-        update_balance(user_id, -amount)
-        await message.answer(f"✅ С пользователя {user_id} списано {amount} $")
-        await bot.send_message(user_id, f"⚠️ Администратор списал {amount} $ с вашего баланса")
-        await log_to_admin(f"⚠️ Админ {message.from_user.id} списал с {user_id} {amount} $")
-    except:
-        await message.answer("❌ Ошибка.")
-    await state.clear()
-
-@dp.callback_query(lambda c: c.data == "admin_withdrawals")
+@dp.callback_query(lambda c: c.data == "withdraws")
 async def admin_withdrawals(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет прав")
@@ -800,7 +734,7 @@ async def admin_withdrawals(callback: types.CallbackQuery):
     for w in withdrawals:
         wid, uid, amount, addr = w
         markup = InlineKeyboardMarkup(inline_keyboard=[
-            [custom_emoji_button("Выполнено", f"approve_wd_{wid}", EMOJI_IDS["success"])]
+            [custom_emoji_button("✅ Выполнено", f"approve_wd_{wid}", EMOJI_IDS["success"])]
         ])
         await callback.message.answer(f"Заявка #{wid}\nОт пользователя {uid}\nСумма: {amount} $\nАдрес: {addr}", reply_markup=markup)
     await callback.answer()
@@ -815,7 +749,7 @@ async def approve_withdrawal_cmd(callback: types.CallbackQuery):
     await callback.message.answer(f"✅ Заявка #{wid} помечена как выполненная.")
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "admin_products")
+@dp.callback_query(lambda c: c.data == "products")
 async def admin_products(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет прав")
@@ -848,19 +782,19 @@ async def del_product_cmd(message: types.Message):
     except:
         await message.answer("❌ Ошибка.")
 
-class AdminBlockState(StatesGroup):
+class AdminBlock(StatesGroup):
     user_id = State()
 
-@dp.callback_query(lambda c: c.data == "admin_block")
+@dp.callback_query(lambda c: c.data == "block")
 async def admin_block_start(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет прав")
         return
     await callback.message.answer("Введите ID пользователя для блокировки:")
-    await state.set_state(AdminBlockState.user_id)
+    await state.set_state(AdminBlock.user_id)
     await callback.answer()
 
-@dp.message(AdminBlockState.user_id)
+@dp.message(AdminBlock.user_id)
 async def admin_block_exec(message: types.Message, state: FSMContext):
     try:
         uid = int(message.text.strip())
@@ -872,19 +806,19 @@ async def admin_block_exec(message: types.Message, state: FSMContext):
         await message.answer("❌ Ошибка. Введите числовой ID.")
     await state.clear()
 
-class AdminUnblockState(StatesGroup):
+class AdminUnblock(StatesGroup):
     user_id = State()
 
-@dp.callback_query(lambda c: c.data == "admin_unblock")
+@dp.callback_query(lambda c: c.data == "unblock")
 async def admin_unblock_start(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет прав")
         return
     await callback.message.answer("Введите ID пользователя для разблокировки:")
-    await state.set_state(AdminUnblockState.user_id)
+    await state.set_state(AdminUnblock.user_id)
     await callback.answer()
 
-@dp.message(AdminUnblockState.user_id)
+@dp.message(AdminUnblock.user_id)
 async def admin_unblock_exec(message: types.Message, state: FSMContext):
     try:
         uid = int(message.text.strip())
@@ -896,20 +830,19 @@ async def admin_unblock_exec(message: types.Message, state: FSMContext):
         await message.answer("❌ Ошибка.")
     await state.clear()
 
-# ---------- Broadcast to all users ----------
-class AdminBroadcastState(StatesGroup):
+class AdminBroadcast(StatesGroup):
     text = State()
 
-@dp.callback_query(lambda c: c.data == "admin_broadcast")
+@dp.callback_query(lambda c: c.data == "broadcast")
 async def admin_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет прав")
         return
     await callback.message.answer("Введите текст рассылки (можно с HTML):")
-    await state.set_state(AdminBroadcastState.text)
+    await state.set_state(AdminBroadcast.text)
     await callback.answer()
 
-@dp.message(AdminBroadcastState.text)
+@dp.message(AdminBroadcast.text)
 async def admin_broadcast_exec(message: types.Message, state: FSMContext):
     text = message.html_text
     users = get_all_users()
@@ -922,13 +855,13 @@ async def admin_broadcast_exec(message: types.Message, state: FSMContext):
             await bot.send_message(uid, text, parse_mode="HTML")
             sent += 1
             await asyncio.sleep(0.05)
-        except Exception as e:
-            logger.error(f"Не удалось отправить {uid}: {e}")
+        except:
+            pass
     await message.answer(f"✅ Рассылка завершена. Отправлено: {sent}")
     await log_to_admin(f"📢 Админ {message.from_user.id} сделал рассылку, отправлено {sent}")
     await state.clear()
 
-# ---------- Mirror ----------
+# ========== ЗЕРКАЛО (РАБОЧЕЕ) ==========
 mirror_process = None
 
 def start_mirror(token):
@@ -955,7 +888,7 @@ def stop_mirror():
 def mirror_status():
     return mirror_process is not None and mirror_process.poll() is None
 
-@dp.callback_query(lambda c: c.data == "admin_mirror")
+@dp.callback_query(lambda c: c.data == "mirror")
 async def admin_mirror(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет прав")
@@ -964,7 +897,7 @@ async def admin_mirror(callback: types.CallbackQuery):
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [custom_emoji_button("Запустить зеркало", "mirror_start", EMOJI_IDS["success"])],
         [custom_emoji_button("Остановить зеркало", "mirror_stop", EMOJI_IDS["delete"])],
-        [custom_emoji_button("Назад", "back_to_menu", EMOJI_IDS["back"])],
+        [custom_emoji_button("Назад", "back_menu", EMOJI_IDS["back"])],
     ])
     await callback.message.answer(f"🪞 Зеркало бота: {status}", reply_markup=markup)
     await callback.answer()
@@ -994,36 +927,33 @@ async def mirror_stop_cmd(callback: types.CallbackQuery):
     await callback.message.answer(f"🪞 {msg}")
     await callback.answer()
 
-# ---------- Help & Back ----------
+# ========== ПОМОЩЬ И НАЗАД ==========
 @dp.message(lambda m: m.text == "Помощь")
 async def help_cmd(message: types.Message):
     if not await ensure_subscribed(message):
         return
-    await message.answer("📖 Команды бота:\n/start - главное меню\nКаталог - список товаров\nДобавить товар - выставить свой товар\nБаланс - ваш баланс\nВывод средств - заявка на вывод\nVK Рассылка - управление VK аккаунтами и рассылкой\nАдмин панель - для администраторов")
+    await message.answer("📖 Команды бота:\n/start - главное меню\nКаталог - список товаров\nДобавить товар - выставить свой товар\nБаланс - ваш баланс\nВывод средств - заявка на вывод\nАдмин панель - для администраторов")
 
 @dp.message(lambda m: m.text == "Главное меню")
 async def back_to_main(message: types.Message):
     if not await ensure_subscribed(message):
         return
-    await message.answer("Главное меню", reply_markup=main_menu_keyboard(message.from_user.id))
+    await message.answer("Главное меню", reply_markup=main_menu(message.from_user.id))
 
-@dp.callback_query(lambda c: c.data == "back_to_menu")
-async def back_to_menu_callback(callback: types.CallbackQuery):
-    await callback.message.answer("Главное меню", reply_markup=main_menu_keyboard(callback.from_user.id))
+@dp.callback_query(lambda c: c.data == "back_menu")
+async def back_menu(callback: types.CallbackQuery):
+    await callback.message.answer("Главное меню", reply_markup=main_menu(callback.from_user.id))
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "noop")
-async def noop_callback(callback: types.CallbackQuery):
-    await callback.answer()
-
-# ---------- Main ----------
+# ========== ЗАПУСК ==========
 async def main():
     init_db()
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("✅ Бот запущен")
+    print("✅ Бот запущен")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    import subprocess, os
     if len(sys.argv) > 1 and sys.argv[1] == "--mirror":
         token = sys.argv[2]
         bot = Bot(token=token)
