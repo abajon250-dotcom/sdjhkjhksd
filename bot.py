@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import sys
+import os
+import subprocess
 import requests
-import time
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -18,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ========== КАСТОМНЫЕ ЭМОДЗИ (твои ID) ==========
+# ---------- Кастомные эмодзи (твои ID) ----------
 EMOJI_IDS = {
     "catalog": "5278613311858959074",
     "add": "5206401524200145033",
@@ -37,7 +38,7 @@ EMOJI_IDS = {
 def custom_emoji_button(text: str, callback_data: str, emoji_id: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=callback_data, icon_custom_emoji_id=emoji_id)
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+# ---------- Вспомогательные функции ----------
 async def is_subscribed(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL_ID, user_id=user_id)
@@ -61,7 +62,7 @@ async def log_to_admin(text: str):
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
-# ========== ГЛАВНОЕ МЕНЮ ==========
+# ---------- Главное меню ----------
 def main_menu(user_id: int) -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(text="Каталог"), KeyboardButton(text="Добавить товар")],
@@ -84,7 +85,7 @@ async def start(message: types.Message):
     await log_to_admin(f"➕ Новый пользователь: {message.from_user.id} (@{message.from_user.username})")
     await message.answer("✅ Добро пожаловать!", reply_markup=main_menu(message.from_user.id))
 
-# ========== БАЛАНС И ВЫВОД ==========
+# ---------- Баланс и пополнение ----------
 @dp.message(lambda m: m.text == "Баланс")
 async def show_balance(message: types.Message):
     if not await ensure_subscribed(message):
@@ -183,7 +184,7 @@ async def withdraw_address(message: types.Message, state: FSMContext):
     await log_to_admin(f"💸 Заявка на вывод от {message.from_user.id}: {amount} $ на адрес {address}")
     await state.clear()
 
-# ========== КАТАЛОГ (ТОЧЬ-В-ТОЧЬ) ==========
+# ---------- Каталог ----------
 user_catalog = {}
 
 @dp.message(lambda m: m.text == "Каталог")
@@ -219,17 +220,24 @@ async def show_catalog(message: types.Message, edit_msg_id: int = None):
     total_pages = max(1, (total + limit - 1) // limit)
     text += f"📄 Страница {page+1} / {total_pages}"
 
-    filter_btn = [custom_emoji_button("Фильтры поиска", "filters", EMOJI_IDS["catalog"])]
+    filter_btn = custom_emoji_button("Фильтры поиска", "filters", EMOJI_IDS["catalog"])
     product_btns = [custom_emoji_button(f"{p[4]} конт. • {p[3]}$", f"view_{p[0]}", EMOJI_IDS["catalog"]) for p in products]
     nav = []
     if page > 0:
         nav.append(custom_emoji_button("◀ Назад", "prev", EMOJI_IDS["back"]))
     if (page+1)*limit < total:
         nav.append(custom_emoji_button("Вперед ▶", "next", EMOJI_IDS["back"]))
-    back_btn = [custom_emoji_button("Назад", "back_menu", EMOJI_IDS["back"])]
+    back_btn = custom_emoji_button("Назад", "back_menu", EMOJI_IDS["back"])
 
-    inline_kb = filter_btn + [[btn] for btn in product_btns] + [nav] + back_btn
+    # Строим правильную inline-клавиатуру: список списков кнопок
+    inline_kb = [[filter_btn]]
+    for btn in product_btns:
+        inline_kb.append([btn])
+    if nav:
+        inline_kb.append(nav)
+    inline_kb.append([back_btn])
     markup = InlineKeyboardMarkup(inline_keyboard=inline_kb)
+
     if edit_msg_id:
         await bot.edit_message_text(text, chat_id=chat_id, message_id=edit_msg_id, parse_mode="HTML", reply_markup=markup)
         state['last_msg_id'] = edit_msg_id
@@ -345,7 +353,7 @@ async def buy_product(callback: types.CallbackQuery):
         await callback.message.answer(f"❌ Недостаточно средств\nДоступно: {balance:.2f} $")
         await callback.answer()
 
-# ========== ДОБАВЛЕНИЕ ТОВАРА ==========
+# ---------- Добавление товара ----------
 class AddProductState(StatesGroup):
     name = State()
     price = State()
@@ -397,7 +405,7 @@ async def add_product_desc(message: types.Message, state: FSMContext):
     await log_to_admin(f"🆕 Новый товар от {message.from_user.id}: {data['name']} за {data['price']}$")
     await state.clear()
 
-# ========== VK РАССЫЛКА (полная) ==========
+# ---------- VK Рассылка (сокращённая, но рабочая) ----------
 class VKAddAccountState(StatesGroup):
     name = State()
     token = State()
@@ -458,9 +466,9 @@ async def vk_acc_token(message: types.Message, state: FSMContext):
             await message.answer(f"✅ Аккаунт «{data['name']}» добавлен для группы {group['name']} (ID {group_id})")
             await state.clear()
         else:
-            markup = InlineKeyboardMarkup()
+            markup = InlineKeyboardMarkup(inline_keyboard=[])
             for g in groups['items']:
-                markup.add(InlineKeyboardButton(text=g['name'], callback_data=f"vk_group_{g['id']}"))
+                markup.inline_keyboard.append([InlineKeyboardButton(text=g['name'], callback_data=f"vk_group_{g['id']}")])
             await message.answer("Найдено несколько групп. Выберите:", reply_markup=markup)
             await state.set_state(VKAddAccountState.group_choice)
     except Exception as e:
@@ -572,10 +580,10 @@ async def start_broadcast(message: types.Message, state: FSMContext):
     if not accounts:
         await message.answer("❌ Сначала добавьте аккаунт VK через «Добавить аккаунт VK».")
         return
-    markup = InlineKeyboardMarkup()
+    markup = InlineKeyboardMarkup(inline_keyboard=[])
     for acc in accounts:
         acc_id, name, _, _ = acc
-        markup.add(InlineKeyboardButton(text=name, callback_data=f"broadcast_acc_{acc_id}"))
+        markup.inline_keyboard.append([InlineKeyboardButton(text=name, callback_data=f"broadcast_acc_{acc_id}")])
     await message.answer("📢 Выберите аккаунт VK для рассылки:", reply_markup=markup)
 
 @dp.callback_query(lambda c: c.data.startswith("broadcast_acc_"))
@@ -583,11 +591,11 @@ async def choose_account(callback: types.CallbackQuery, state: FSMContext):
     acc_id = int(callback.data.split("_")[2])
     await state.update_data(account_id=acc_id)
     templates = get_vk_templates(callback.from_user.id)
-    markup = InlineKeyboardMarkup()
+    markup = InlineKeyboardMarkup(inline_keyboard=[])
     for t in templates:
         tid, name, _ = t
-        markup.add(InlineKeyboardButton(text=f"📄 {name}", callback_data=f"broadcast_tpl_{tid}"))
-    markup.add(InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="broadcast_manual"))
+        markup.inline_keyboard.append([InlineKeyboardButton(text=f"📄 {name}", callback_data=f"broadcast_tpl_{tid}")])
+    markup.inline_keyboard.append([InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="broadcast_manual")])
     await callback.message.answer("📝 Выберите шаблон или введите текст вручную:", reply_markup=markup)
     await callback.answer()
 
@@ -654,7 +662,7 @@ async def do_vk_broadcast(chat_id, user_id, account_id, text):
     except Exception as e:
         await bot.send_message(chat_id, f"❌ Ошибка VK: {e}")
 
-# ========== АДМИН ПАНЕЛЬ ==========
+# ---------- Админ панель ----------
 @dp.message(lambda m: m.text == "Админ панель" and is_admin(m.from_user.id))
 async def admin_panel(message: types.Message):
     markup = InlineKeyboardMarkup(inline_keyboard=[
@@ -861,7 +869,7 @@ async def admin_broadcast_exec(message: types.Message, state: FSMContext):
     await log_to_admin(f"📢 Админ {message.from_user.id} сделал рассылку, отправлено {sent}")
     await state.clear()
 
-# ========== ЗЕРКАЛО (РАБОЧЕЕ) ==========
+# ---------- Зеркало ----------
 mirror_process = None
 
 def start_mirror(token):
@@ -927,7 +935,7 @@ async def mirror_stop_cmd(callback: types.CallbackQuery):
     await callback.message.answer(f"🪞 {msg}")
     await callback.answer()
 
-# ========== ПОМОЩЬ И НАЗАД ==========
+# ---------- Помощь и назад ----------
 @dp.message(lambda m: m.text == "Помощь")
 async def help_cmd(message: types.Message):
     if not await ensure_subscribed(message):
@@ -945,7 +953,7 @@ async def back_menu(callback: types.CallbackQuery):
     await callback.message.answer("Главное меню", reply_markup=main_menu(callback.from_user.id))
     await callback.answer()
 
-# ========== ЗАПУСК ==========
+# ---------- Запуск ----------
 async def main():
     init_db()
     await bot.delete_webhook(drop_pending_updates=True)
@@ -953,7 +961,6 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    import subprocess, os
     if len(sys.argv) > 1 and sys.argv[1] == "--mirror":
         token = sys.argv[2]
         bot = Bot(token=token)
