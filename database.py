@@ -24,6 +24,15 @@ def init_db():
         description TEXT,
         created_at TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS subscriptions
+                 (
+                     user_id
+                     INTEGER
+                     PRIMARY
+                     KEY,
+                     expires_at
+                     TEXT
+                 )""")
     # Purchases
     c.execute("""CREATE TABLE IF NOT EXISTS purchases (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -302,3 +311,52 @@ def is_blocked(user_id):
     blocked = c.fetchone() is not None
     conn.close()
     return blocked
+
+# ---------- Subscriptions (for VK spammer) ----------
+def create_subscription(user_id, days):
+    expires_at = (datetime.now() + timedelta(days=days)).isoformat()
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO subscriptions (user_id, expires_at) VALUES (?,?)", (user_id, expires_at))
+    conn.commit()
+    conn.close()
+
+def get_subscription(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT expires_at FROM subscriptions WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def is_subscription_active(user_id):
+    expires = get_subscription(user_id)
+    if not expires:
+        return False
+    return datetime.fromisoformat(expires) > datetime.now()
+
+# Добавьте в конец database.py эти функции:
+
+def create_subscription(user_id, sub_type, days):
+    expires_at = (datetime.now() + timedelta(days=days)).isoformat()
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO subscriptions (user_id, type, expires_at, auto_renew) VALUES (?,?,?,?)",
+              (user_id, sub_type, expires_at, 1))
+    conn.commit()
+    conn.close()
+
+def get_subscription(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT type, expires_at, auto_renew FROM subscriptions WHERE user_id=?", (user_id,))
+    sub = c.fetchone()
+    conn.close()
+    return sub
+
+def is_subscription_active(user_id):
+    sub = get_subscription(user_id)
+    if not sub:
+        return False
+    expires_at = datetime.fromisoformat(sub[1])
+    return expires_at > datetime.now()
