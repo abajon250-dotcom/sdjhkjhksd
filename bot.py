@@ -15,6 +15,13 @@ import vk_api
 from config import BOT_TOKEN, ADMIN_IDS, REQUIRED_CHANNEL_ID, ADMIN_LOG_CHAT_ID, CRYPTOBOT_API_TOKEN
 from database import *
 
+# Цены подписки на VK спамер (дней: цена USDT)
+SUBSCRIPTION_PRICES = {
+    1: 2.0,
+    7: 10.0,
+    30: 35.0
+}
+
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -67,7 +74,7 @@ def main_menu(user_id: int) -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(text="Каталог"), KeyboardButton(text="Добавить товар")],
         [KeyboardButton(text="Баланс"), KeyboardButton(text="Вывод средств")],
-        [KeyboardButton(text="Помощь")],
+        [KeyboardButton(text="VK Рассылка"), KeyboardButton(text="Помощь")],  # <-- здесь
     ]
     if is_admin(user_id):
         kb.append([KeyboardButton(text="Админ панель")])
@@ -423,6 +430,16 @@ class VKBroadcastState(StatesGroup):
 async def vk_menu(message: types.Message):
     if not await ensure_subscribed(message):
         return
+    # Проверяем подписку
+    if not is_subscription_active(message.from_user.id):
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [custom_emoji_button("1 день - 2$", "sub_vk_1", EMOJI_IDS["balance"])],
+            [custom_emoji_button("7 дней - 10$", "sub_vk_7", EMOJI_IDS["balance"])],
+            [custom_emoji_button("30 дней - 35$", "sub_vk_30", EMOJI_IDS["balance"])],
+        ])
+        await message.answer("❌ У вас нет активной подписки на VK рассылку.\nВыберите срок:", reply_markup=markup)
+        return
+    # Если подписка есть, показываем меню
     kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Добавить аккаунт VK"), KeyboardButton(text="Мои аккаунты")],
@@ -431,13 +448,13 @@ async def vk_menu(message: types.Message):
         ],
         resize_keyboard=True
     )
-    await message.answer("📢 VK Рассылка", reply_markup=kb)
+    await message.answer("📢 VK Рассылка (подписка активна)", reply_markup=kb)
 
 @dp.message(lambda m: m.text == "Добавить аккаунт VK")
 async def add_vk_account_start(message: types.Message, state: FSMContext):
     if not await ensure_subscribed(message):
         return
-    await message.answer("Введите название аккаунта (например, 'Мой бот'):")
+    await message.answer("Введите название аккаунта (например, 'пидорас'):")
     await state.set_state(VKAddAccountState.name)
 
 @dp.message(VKAddAccountState.name)
@@ -953,6 +970,21 @@ async def back_menu(callback: types.CallbackQuery):
     await callback.message.answer("Главное меню", reply_markup=main_menu(callback.from_user.id))
     await callback.answer()
 
+@dp.callback_query(lambda c: c.data.startswith("sub_vk_"))
+async def buy_vk_subscription(callback: types.CallbackQuery):
+    days = int(callback.data.split("_")[2])
+    price = SUBSCRIPTION_PRICES[days]
+    balance = get_balance(callback.from_user.id)
+    if balance >= price:
+        update_balance(callback.from_user.id, -price)
+        create_subscription(callback.from_user.id, 'vk_spammer', days)
+        from datetime import datetime, timedelta
+        expires = (datetime.now() + timedelta(days=days)).strftime("%d.%m.%Y")
+        await callback.message.answer(f"✅ Подписка активирована на {days} дней (до {expires}).\nТеперь вы можете использовать VK рассылку.")
+        await log_to_admin(f"💎 Пользователь {callback.from_user.id} купил подписку VK на {days} дней за {price}$")
+    else:
+        await callback.message.answer(f"❌ Недостаточно средств. Нужно {price} USDT. Пополните баланс.")
+    await callback.answer()
 # ---------- Запуск ----------
 async def main():
     init_db()
