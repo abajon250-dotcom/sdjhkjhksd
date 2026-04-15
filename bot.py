@@ -23,24 +23,16 @@ import vk_api
 from config import BOT_TOKEN, ADMIN_IDS, REQUIRED_CHANNEL_ID, ADMIN_LOG_CHAT_ID, CRYPTOBOT_API_TOKEN
 from database import *
 
-# ======================================================================
-# LOGGING
-# ======================================================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ======================================================================
-# BOT INIT
-# ======================================================================
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# ======================================================================
-# CUSTOM EMOJIS (YOUR PREMIUM IDS)
-# ======================================================================
+# Custom emoji IDs (your premium emojis)
 EMOJI_IDS = {
-"catalog": "5278613311858959074",
+    "catalog": "5278613311858959074",
     "add": "5206401524200145033",
     "balance": "5276398496008663230",
     "withdraw": "5206476089127372379",
@@ -54,13 +46,10 @@ EMOJI_IDS = {
     "home": "5278413853577734640",
 }
 
-
 def custom_emoji_button(text: str, callback_data: str, emoji_id: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=callback_data, icon_custom_emoji_id=emoji_id)
 
-# ======================================================================
-# HELPERS
-# ======================================================================
+# ---------- Helpers ----------
 async def is_subscribed(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL_ID, user_id=user_id)
@@ -78,15 +67,13 @@ async def log_to_admin(text: str):
     if ADMIN_LOG_CHAT_ID:
         try:
             await bot.send_message(ADMIN_LOG_CHAT_ID, text)
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Log send failed: {e}")
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
-# ======================================================================
-# MAIN MENU
-# ======================================================================
+# ---------- Main Menu ----------
 def main_menu_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(text="Каталог"), KeyboardButton(text="Добавить товар")],
@@ -109,9 +96,7 @@ async def start(message: types.Message):
     await log_to_admin(f"➕ Новый пользователь: {message.from_user.id} (@{message.from_user.username})")
     await message.answer("✅ Добро пожаловать!", reply_markup=main_menu_keyboard(message.from_user.id))
 
-# ======================================================================
-# BALANCE & TOP-UP (CRYPTOBOT) & WITHDRAW
-# ======================================================================
+# ---------- Balance & Top-up & Withdraw ----------
 @dp.message(lambda m: m.text == "Баланс")
 async def show_balance(message: types.Message):
     if not await ensure_subscribed(message):
@@ -158,7 +143,7 @@ async def check_payment_status(user_id, invoice_id, amount):
     url = "https://pay.crypt.bot/api/getInvoices"
     headers = {"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN}
     params = {"invoice_ids": invoice_id}
-    for _ in range(60):  # 10 минут
+    for _ in range(60):
         await asyncio.sleep(10)
         resp = requests.get(url, headers=headers, params=params).json()
         if resp.get("ok") and resp["result"]["items"]:
@@ -210,10 +195,8 @@ async def withdraw_address(message: types.Message, state: FSMContext):
     await log_to_admin(f"💸 Заявка на вывод от {message.from_user.id}: {amount} $ на адрес {address}")
     await state.clear()
 
-# ======================================================================
-# CATALOG (EXACTLY AS ON SCREEN)
-# ======================================================================
-user_catalog_state = {}  # chat_id -> dict
+# ---------- Catalog (exactly as screenshot) ----------
+user_catalog_state = {}
 
 @dp.message(lambda m: m.text == "Каталог")
 async def catalog_command(message: types.Message):
@@ -235,14 +218,11 @@ async def show_catalog(message: types.Message, edit_msg_id: int = None):
     total = get_total_products(min_contacts)
 
     text = "📋 <b>Каталог аккаунтов</b>\n\n"
-    # Filter button
     filter_btn = [custom_emoji_button("Фильтры поиска", "show_filters", EMOJI_IDS["catalog"])]
-    # Product buttons
     product_btns = []
     for p in products:
         pid, _, name, price, contacts, _, _ = p
         product_btns.append([custom_emoji_button(f"{contacts} конт. • {price}$", f"view_{pid}", EMOJI_IDS["catalog"])])
-    # Pagination
     total_pages = max(1, (total + limit - 1) // limit)
     pagination = []
     if page > 0:
@@ -397,17 +377,16 @@ async def buy_product(callback: types.CallbackQuery):
         update_balance(buyer_id, -price)
         update_balance(seller_id, price)
         add_purchase(product_id, buyer_id, price)
-        await callback.message.answer(f"✅ Вы купили {name} за {price}$")
-        await bot.send_message(seller_id, f"💰 Ваш товар {name} куплен за {price}$. Баланс пополнен.")
-        await log_to_admin(f"🛒 Покупка: {buyer_id} купил у {seller_id} товар {name} за {price}$")
+        delete_product(product_id)  # удаляем товар после покупки
+        await callback.message.answer(f"✅ Вы купили {name} за {price}$\nТовар удалён из каталога.")
+        await bot.send_message(seller_id, f"💰 Ваш товар {name} куплен за {price}$. Баланс пополнен. Товар удалён.")
+        await log_to_admin(f"🛒 Покупка: {buyer_id} купил у {seller_id} товар {name} за {price}$. Товар удалён.")
         await callback.answer("Покупка успешна!", show_alert=True)
     else:
         await callback.message.answer(f"❌ Недостаточно средств\nДоступно: {balance:.2f} $")
         await callback.answer()
 
-# ======================================================================
-# ADD PRODUCT
-# ======================================================================
+# ---------- Add Product ----------
 class AddProductState(StatesGroup):
     name = State()
     price = State()
@@ -457,9 +436,7 @@ async def add_product_desc(message: types.Message, state: FSMContext):
     await log_to_admin(f"🆕 Новый товар от {message.from_user.id}: {data['name']} за {data['price']}$")
     await state.clear()
 
-# ======================================================================
-# VK SENDER (FULL)
-# ======================================================================
+# ---------- VK Sender (full) ----------
 class VKAddAccountState(StatesGroup):
     name = State()
     token = State()
@@ -716,9 +693,7 @@ async def do_vk_broadcast(chat_id, user_id, account_id, text):
     except Exception as e:
         await bot.send_message(chat_id, f"❌ Ошибка VK: {e}")
 
-# ======================================================================
-# ADMIN PANEL (WITH BROADCAST TO USERS)
-# ======================================================================
+# ---------- Admin Panel ----------
 @dp.message(lambda m: m.text == "Админ панель" and is_admin(m.from_user.id))
 async def admin_panel(message: types.Message):
     markup = InlineKeyboardMarkup(inline_keyboard=[
@@ -752,8 +727,11 @@ async def admin_users(callback: types.CallbackQuery):
         await callback.answer("Нет прав")
         return
     users = get_all_users()
-    text = "👥 Список пользователей:\n" + "\n".join(str(uid) for uid in users)
-    await callback.message.answer(text)
+    if not users:
+        await callback.message.answer("Список пользователей пуст.")
+    else:
+        text = "👥 Список пользователей:\n" + "\n".join(str(uid) for uid in users)
+        await callback.message.answer(text)
     await callback.answer()
 
 class AdminGiveState(StatesGroup):
@@ -918,7 +896,7 @@ async def admin_unblock_exec(message: types.Message, state: FSMContext):
         await message.answer("❌ Ошибка.")
     await state.clear()
 
-# ---------- BROADCAST TO ALL USERS (ADMIN) ----------
+# ---------- Broadcast to all users ----------
 class AdminBroadcastState(StatesGroup):
     text = State()
 
@@ -950,9 +928,7 @@ async def admin_broadcast_exec(message: types.Message, state: FSMContext):
     await log_to_admin(f"📢 Админ {message.from_user.id} сделал рассылку, отправлено {sent}")
     await state.clear()
 
-# ======================================================================
-# MIRROR BOT
-# ======================================================================
+# ---------- Mirror ----------
 mirror_process = None
 
 def start_mirror(token):
@@ -1018,9 +994,7 @@ async def mirror_stop_cmd(callback: types.CallbackQuery):
     await callback.message.answer(f"🪞 {msg}")
     await callback.answer()
 
-# ======================================================================
-# HELP & BACK TO MAIN MENU
-# ======================================================================
+# ---------- Help & Back ----------
 @dp.message(lambda m: m.text == "Помощь")
 async def help_cmd(message: types.Message):
     if not await ensure_subscribed(message):
@@ -1042,9 +1016,7 @@ async def back_to_menu_callback(callback: types.CallbackQuery):
 async def noop_callback(callback: types.CallbackQuery):
     await callback.answer()
 
-# ======================================================================
-# MAIN
-# ======================================================================
+# ---------- Main ----------
 async def main():
     init_db()
     await bot.delete_webhook(drop_pending_updates=True)

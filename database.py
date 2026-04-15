@@ -136,8 +136,13 @@ def get_products(limit=10, offset=0, sort_by='new', min_contacts=0):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     order = "ORDER BY created_at DESC" if sort_by == 'new' else "ORDER BY price ASC"
-    c.execute(f"SELECT id, seller_id, name, price, contacts, description, created_at FROM products WHERE contacts >= ? {order} LIMIT ? OFFSET ?",
-              (min_contacts, limit, offset))
+    c.execute(f"""
+        SELECT id, seller_id, name, price, contacts, description, created_at 
+        FROM products 
+        WHERE contacts >= ? 
+        {order} 
+        LIMIT ? OFFSET ?
+    """, (min_contacts, limit, offset))
     prods = c.fetchall()
     conn.close()
     return prods
